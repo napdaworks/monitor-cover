@@ -1,0 +1,7 @@
+# 빌드 결과물 (exe는 GitHub 릴리스에 올려요)
+*.exe
+app.ico
+
+# NAPDA 내부 문서와 블로그 테마는 이 저장소에 넣지 않아요
+NAPDA.md
+blog/

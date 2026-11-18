@@ -1,0 +1,4 @@
+# 배치 파일은 어디서 받아도 CRLF로 (cmd가 LF만 있는 배치 파일을 잘못 읽는 경우가 있어요)
+*.bat text eol=crlf
+# 한글 exe 이름이 든 응답 파일은 BOM·줄바꿈을 그대로 둬요
+*.rsp -text
