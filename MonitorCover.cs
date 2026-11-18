@@ -135,6 +135,9 @@ namespace Napda.MonitorCover
         public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
         [DllImport("gdi32.dll")]
         public static extern bool BitBlt(IntPtr hdcDest, int xDest, int yDest, int w, int h, IntPtr hdcSrc, int xSrc, int ySrc, uint rop);
+        public const uint PW_RENDERFULLCONTENT = 0x2;
+        [DllImport("user32.dll")]
+        public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
 
         [DllImport("dxva2.dll", SetLastError = true)]
         public static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr hMonitor, out uint pdwNumberOfPhysicalMonitors);
@@ -2236,6 +2239,342 @@ namespace Napda.MonitorCover
     }
 
     // 구형 윈도우용 대체 모드 진단: 모니터를 DDC/CI로 잠깐 껐다가 다시 켠다
+    // 블로그·README에 넣을 그림을 만든다.
+    // 창은 화면 밖에서 그려서 찍기 때문에 사용자 화면에는 아무것도 뜨지 않는다.
+    static class DocImages
+    {
+        public static int Run(string dir)
+        {
+            Directory.CreateDirectory(dir);
+            var monitor = new MonitorReport();
+            monitor.Ready = true;
+            monitor.On = 1;
+
+            using (var window = new MainWindow(Art.LoadAppIcon()))
+            {
+                window.AllowClose = true;
+                window.ShowState(false, monitor, "Ctrl+Alt+B", false, false, true);
+                Capture(window, Path.Combine(dir, "window-visible.png"));
+                window.ShowState(true, monitor, "Ctrl+Alt+B", true, false, true);
+                Capture(window, Path.Combine(dir, "window-covered.png"));
+            }
+            using (var form = new UnlockSettingsForm("Ctrl+Shift+F9", false, false))
+                Capture(form, Path.Combine(dir, "unlock-settings.png"));
+            using (var form = new CloseChoiceForm())
+                Capture(form, Path.Combine(dir, "close-choice.png"));
+            using (var form = new PasswordPrompt(delegate(string text) { return false; }))
+                Capture(form, Path.Combine(dir, "password-prompt.png"));
+            DrawConcept(Path.Combine(dir, "concept.png"));
+            DrawScenes(Path.Combine(dir, "scenes"));
+            return 0;
+        }
+
+        // 창 안쪽은 WinForms가 직접 그리게 하고(화면 밖이어도 됨), 제목 표시줄은 윈도우 10 모양으로 그려 붙인다
+        static void Capture(Form form, string path)
+        {
+            form.StartPosition = FormStartPosition.Manual;
+            form.ShowInTaskbar = false;
+            form.Location = new Point(-20000, -20000);
+            form.Show();
+            Stopwatch sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < 400)
+            {
+                Application.DoEvents();
+                Thread.Sleep(20);
+            }
+            Size client = form.ClientSize;
+            const int titleHeight = 34;
+            using (var inside = new Bitmap(client.Width, client.Height, PixelFormat.Format32bppArgb))
+            using (var shot = new Bitmap(client.Width + 2, client.Height + titleHeight + 1, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(inside))
+                    g.Clear(form.BackColor);
+                foreach (Control child in form.Controls)
+                    child.DrawToBitmap(inside, new Rectangle(child.Location, child.Size));
+                using (Graphics g = Graphics.FromImage(shot))
+                using (var titleFont = new Font("Malgun Gothic", 12f, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (var pen = new Pen(Color.FromArgb(40, 40, 40), 1.2f))
+                {
+                    g.Clear(Color.FromArgb(170, 170, 175));
+                    g.FillRectangle(Brushes.White, 1, 1, client.Width, titleHeight - 1);
+                    if (form.Icon != null && form.ShowIcon && form.FormBorderStyle != FormBorderStyle.FixedDialog)
+                        g.DrawIcon(new Icon(form.Icon, 16, 16), new Rectangle(10, 9, 16, 16));
+                    int textX = form.FormBorderStyle == FormBorderStyle.FixedDialog ? 12 : 34;
+                    TextRenderer.DrawText(g, form.Text, titleFont, new Point(textX, 9), Color.Black);
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    int x = client.Width - 24;
+                    g.DrawLine(pen, x - 5, 12, x + 5, 22);
+                    g.DrawLine(pen, x + 5, 12, x - 5, 22);
+                    if (form.MinimizeBox) g.DrawLine(pen, x - 51, 17, x - 41, 17);
+                    g.DrawImage(inside, 1, titleHeight);
+                }
+                shot.Save(path, ImageFormat.Png);
+            }
+            form.Hide();
+        }
+
+        // 시연 장면 6개 (GIF·영상용). 실제 검은 화면은 화면 녹화에 안 찍히게 만든 거라, 흐름을 그림으로 보여 준다.
+        public static void DrawScenes(string dir)
+        {
+            Directory.CreateDirectory(dir);
+            DrawScene(Path.Combine(dir, "scene1.png"), 1, "평소에는 본체 모니터와 원격 화면이 똑같이 보여요", false, false, false, false);
+            DrawScene(Path.Combine(dir, "scene2.png"), 2, "모니터 가리기 창에서 [화면 가리기]를 눌러요", false, true, false, false);
+            DrawScene(Path.Combine(dir, "scene3.png"), 3, "본체 모니터만 까맣게! 원격 화면은 그대로예요", true, false, false, false);
+            DrawScene(Path.Combine(dir, "scene4.png"), 4, "누가 모니터를 껐다 켜도 까만 화면뿐이에요", true, false, true, false);
+            DrawScene(Path.Combine(dir, "scene5.png"), 5, "자리에 돌아오면 내 단축키를 눌러요", true, false, false, true);
+            DrawScene(Path.Combine(dir, "scene6.png"), 6, "다시 원래 화면! 내 화면은 나만 봐요", false, false, false, false);
+        }
+
+        const int SceneW = 1200, SceneH = 630;
+        static readonly Rectangle LeftMonitor = new Rectangle(70, 130, 440, 270);
+        static readonly Rectangle RightMonitor = new Rectangle(690, 130, 440, 270);
+
+        static void DrawScene(string path, int step, string caption, bool leftBlack, bool showApp, bool powerOn, bool showKeys)
+        {
+            Color dark = Color.FromArgb(13, 15, 20), accent = Color.FromArgb(255, 90, 54), gray = Color.FromArgb(107, 112, 128);
+            using (var bmp = new Bitmap(SceneW, SceneH, PixelFormat.Format32bppArgb))
+            using (Graphics g = Graphics.FromImage(bmp))
+            using (var titleFont = new Font("Malgun Gothic", 30f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var labelFont = new Font("Malgun Gothic", 21f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var smallFont = new Font("Malgun Gothic", 17f, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var stepFont = new Font("Malgun Gothic", 15f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var darkBrush = new SolidBrush(dark))
+            using (var grayBrush = new SolidBrush(gray))
+            using (var accentBrush = new SolidBrush(accent))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                g.Clear(Color.FromArgb(244, 245, 247));
+                var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+                FillRound(g, accentBrush, new Rectangle(SceneW / 2 - 34, 22, 68, 28), 14);
+                g.DrawString(step + " / 6", stepFont, Brushes.White, new RectangleF(SceneW / 2 - 34, 22, 68, 28), center);
+                g.DrawString(caption, titleFont, darkBrush, new RectangleF(0, 58, SceneW, 50), center);
+
+                DrawMonitor(g, LeftMonitor);
+                DrawMonitor(g, RightMonitor);
+                Rectangle leftScreen = Rectangle.Inflate(LeftMonitor, -14, -14);
+                Rectangle rightScreen = Rectangle.Inflate(RightMonitor, -14, -14);
+                if (leftBlack)
+                {
+                    g.FillRectangle(Brushes.Black, leftScreen);
+                    if (powerOn)
+                    {
+                        using (var faint = new SolidBrush(Color.FromArgb(90, 94, 104)))
+                            g.DrawString("모니터는 켜졌지만…", smallFont, faint, leftScreen, center);
+                    }
+                }
+                else
+                {
+                    DrawDesk(g, leftScreen, showApp);
+                }
+                DrawDesk(g, rightScreen, showApp);
+
+                if (powerOn)
+                {
+                    // 모니터 전원 버튼이 눌린 모습
+                    var button = new Rectangle(LeftMonitor.Right - 40, LeftMonitor.Bottom - 8, 16, 16);
+                    using (var glow = new SolidBrush(Color.FromArgb(90, 255, 90, 54)))
+                        g.FillEllipse(glow, Rectangle.Inflate(button, 10, 10));
+                    g.FillEllipse(accentBrush, button);
+                    g.DrawString("전원 ON", stepFont, accentBrush, LeftMonitor.Right - 100, LeftMonitor.Bottom + 14);
+                }
+
+                g.DrawString("회사 자리의 실제 모니터", labelFont, darkBrush, new RectangleF(LeftMonitor.X, 440, LeftMonitor.Width, 32), center);
+                g.DrawString("집·휴대폰에서 원격으로 본 화면", labelFont, darkBrush, new RectangleF(RightMonitor.X, 440, RightMonitor.Width, 32), center);
+
+                var pc = new Rectangle(SceneW / 2 - 50, 206, 100, 120);
+                FillRound(g, darkBrush, pc, 12);
+                using (var led = new SolidBrush(Color.FromArgb(80, 220, 120)))
+                    g.FillEllipse(led, pc.X + 44, pc.Bottom - 26, 12, 12);
+                g.DrawString("PC는 계속 일해요", smallFont, darkBrush, new RectangleF(SceneW / 2 - 100, 334, 200, 26), center);
+                using (var pen = new Pen(accent, 4f))
+                {
+                    pen.CustomEndCap = new AdjustableArrowCap(5, 5);
+                    g.DrawLine(pen, pc.X - 8, pc.Y + 60, LeftMonitor.Right + 18, pc.Y + 60);
+                    g.DrawLine(pen, pc.Right + 8, pc.Y + 60, RightMonitor.X - 18, pc.Y + 60);
+                }
+
+                if (showKeys)
+                {
+                    string[] keys = { "Ctrl", "+", "Alt", "+", "B" };
+                    int x = SceneW / 2 - 150;
+                    foreach (string key in keys)
+                    {
+                        if (key == "+")
+                        {
+                            g.DrawString("+", labelFont, darkBrush, x, 498);
+                            x += 30;
+                            continue;
+                        }
+                        int w = key.Length > 1 ? 74 : 52;
+                        var cap = new Rectangle(x, 490, w, 46);
+                        FillRound(g, darkBrush, new Rectangle(cap.X, cap.Y + 4, cap.Width, cap.Height), 8);
+                        FillRound(g, Brushes.White, cap, 8);
+                        using (var edge = new Pen(dark, 2f)) g.DrawRectangle(edge, cap.X, cap.Y, cap.Width, cap.Height);
+                        g.DrawString(key, labelFont, darkBrush, new RectangleF(cap.X, cap.Y, cap.Width, cap.Height), center);
+                        x += w + 12;
+                    }
+                }
+
+                g.FillRectangle(accentBrush, 0, SceneH - 64, SceneW, 4);
+                g.DrawString(About.Name + " - " + About.Company + " by " + About.Author, smallFont, grayBrush, new RectangleF(0, SceneH - 52, SceneW, 40), center);
+                bmp.Save(path, ImageFormat.Png);
+            }
+        }
+
+        // 평소 화면: 메신저·문서 창을 단순한 모양으로. showApp이면 모니터 가리기 창과 마우스 클릭도 그린다.
+        static void DrawDesk(Graphics g, Rectangle screen, bool showApp)
+        {
+            using (var desk = new SolidBrush(Color.FromArgb(214, 228, 245)))
+                g.FillRectangle(desk, screen);
+            var chat = new Rectangle(screen.X + 22, screen.Y + 22, 170, 190);
+            var doc = new Rectangle(screen.X + 212, screen.Y + 38, 170, 174);
+            FillRound(g, Brushes.White, chat, 10);
+            FillRound(g, Brushes.White, doc, 10);
+            using (var bubbleA = new SolidBrush(Color.FromArgb(225, 230, 238)))
+            using (var bubbleB = new SolidBrush(Color.FromArgb(70, 160, 255)))
+            {
+                FillRound(g, bubbleA, new Rectangle(chat.X + 12, chat.Y + 18, 110, 26), 12);
+                FillRound(g, bubbleB, new Rectangle(chat.Right - 112, chat.Y + 56, 100, 26), 12);
+                FillRound(g, bubbleA, new Rectangle(chat.X + 12, chat.Y + 94, 130, 26), 12);
+                FillRound(g, bubbleB, new Rectangle(chat.Right - 92, chat.Y + 132, 80, 26), 12);
+            }
+            using (var line = new SolidBrush(Color.FromArgb(214, 218, 226)))
+            {
+                g.FillRectangle(line, doc.X + 14, doc.Y + 18, 110, 10);
+                for (int i = 0; i < 6; i++) g.FillRectangle(line, doc.X + 14, doc.Y + 44 + i * 20, i % 3 == 2 ? 90 : 142, 8);
+            }
+            if (!showApp) return;
+
+            var app = new Rectangle(screen.X + screen.Width / 2 - 95, screen.Y + 50, 190, 140);
+            using (var shadow = new SolidBrush(Color.FromArgb(60, 0, 0, 0)))
+                FillRound(g, shadow, new Rectangle(app.X + 3, app.Y + 5, app.Width, app.Height), 10);
+            FillRound(g, Brushes.White, app, 10);
+            using (var titleFont = new Font("Malgun Gothic", 12f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var buttonFont = new Font("Malgun Gothic", 15f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var accent = new SolidBrush(Color.FromArgb(255, 90, 54)))
+            {
+                g.DrawString(About.Name, titleFont, Brushes.Black, app.X + 12, app.Y + 10);
+                var button = new Rectangle(app.X + 14, app.Y + 52, app.Width - 28, 44);
+                FillRound(g, accent, button, 8);
+                var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                g.DrawString("화면 가리기", buttonFont, Brushes.White, new RectangleF(button.X, button.Y, button.Width, button.Height), center);
+                // 마우스 커서
+                var tip = new Point(button.Right - 30, button.Bottom - 12);
+                Point[] arrow = { tip, new Point(tip.X, tip.Y + 26), new Point(tip.X + 7, tip.Y + 20), new Point(tip.X + 12, tip.Y + 30), new Point(tip.X + 17, tip.Y + 28), new Point(tip.X + 12, tip.Y + 18), new Point(tip.X + 20, tip.Y + 18) };
+                g.FillPolygon(Brushes.White, arrow);
+                using (var edge = new Pen(Color.Black, 1.5f)) g.DrawPolygon(edge, arrow);
+            }
+        }
+
+        // "본체 모니터는 까맣게, 원격 화면은 그대로"를 한 장으로 보여 주는 설명 그림
+        static void DrawConcept(string path)
+        {
+            const int W = 1200, H = 630;
+            Color dark = Color.FromArgb(13, 15, 20), accent = Color.FromArgb(255, 90, 54), gray = Color.FromArgb(107, 112, 128);
+            using (var bmp = new Bitmap(W, H, PixelFormat.Format32bppArgb))
+            using (Graphics g = Graphics.FromImage(bmp))
+            using (var titleFont = new Font("Malgun Gothic", 30f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var labelFont = new Font("Malgun Gothic", 22f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var smallFont = new Font("Malgun Gothic", 17f, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var darkBrush = new SolidBrush(dark))
+            using (var grayBrush = new SolidBrush(gray))
+            using (var accentBrush = new SolidBrush(accent))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                g.Clear(Color.FromArgb(244, 245, 247));
+                var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+                g.DrawString("본체 모니터는 까맣게, 원격 화면은 그대로", titleFont, darkBrush, new RectangleF(0, 28, W, 50), center);
+
+                var left = new Rectangle(70, 120, 440, 270);
+                var right = new Rectangle(690, 120, 440, 270);
+                DrawMonitor(g, left);
+                DrawMonitor(g, right);
+
+                // 본체 모니터: 아무것도 안 보임
+                Rectangle leftScreen = Rectangle.Inflate(left, -14, -14);
+                using (var black = new SolidBrush(Color.Black))
+                    g.FillRectangle(black, leftScreen);
+                using (var faint = new SolidBrush(Color.FromArgb(90, 94, 104)))
+                    g.DrawString("아무것도 안 보여요", smallFont, faint, leftScreen, center);
+
+                // 원격 화면: 평소 화면 (메신저·문서 창을 단순한 모양으로)
+                Rectangle rightScreen = Rectangle.Inflate(right, -14, -14);
+                using (var desk = new SolidBrush(Color.FromArgb(214, 228, 245)))
+                    g.FillRectangle(desk, rightScreen);
+                var chat = new Rectangle(rightScreen.X + 22, rightScreen.Y + 22, 170, 190);
+                var doc = new Rectangle(rightScreen.X + 212, rightScreen.Y + 38, 170, 174);
+                using (var white = new SolidBrush(Color.White))
+                {
+                    FillRound(g, white, chat, 10);
+                    FillRound(g, white, doc, 10);
+                }
+                using (var bubbleA = new SolidBrush(Color.FromArgb(225, 230, 238)))
+                using (var bubbleB = new SolidBrush(Color.FromArgb(70, 160, 255)))
+                {
+                    FillRound(g, bubbleA, new Rectangle(chat.X + 12, chat.Y + 18, 110, 26), 12);
+                    FillRound(g, bubbleB, new Rectangle(chat.Right - 112, chat.Y + 56, 100, 26), 12);
+                    FillRound(g, bubbleA, new Rectangle(chat.X + 12, chat.Y + 94, 130, 26), 12);
+                    FillRound(g, bubbleB, new Rectangle(chat.Right - 92, chat.Y + 132, 80, 26), 12);
+                }
+                using (var line = new SolidBrush(Color.FromArgb(214, 218, 226)))
+                {
+                    g.FillRectangle(line, doc.X + 14, doc.Y + 18, 110, 10);
+                    for (int i = 0; i < 6; i++) g.FillRectangle(line, doc.X + 14, doc.Y + 44 + i * 20, i % 3 == 2 ? 90 : 142, 8);
+                }
+
+                g.DrawString("회사 자리의 실제 모니터", labelFont, darkBrush, new RectangleF(left.X, 430, left.Width, 34), center);
+                g.DrawString("옆자리에서 봐도 까만 화면이에요", smallFont, grayBrush, new RectangleF(left.X, 466, left.Width, 28), center);
+                g.DrawString("집·휴대폰에서 원격으로 본 화면", labelFont, darkBrush, new RectangleF(right.X, 430, right.Width, 34), center);
+                g.DrawString("평소처럼 보이고, 그대로 일할 수 있어요", smallFont, grayBrush, new RectangleF(right.X, 466, right.Width, 28), center);
+
+                // 가운데 PC
+                var pc = new Rectangle(W / 2 - 50, 196, 100, 120);
+                FillRound(g, darkBrush, pc, 12);
+                using (var led = new SolidBrush(Color.FromArgb(80, 220, 120)))
+                    g.FillEllipse(led, pc.X + 44, pc.Bottom - 26, 12, 12);
+                g.DrawString("PC는 계속 일해요", smallFont, darkBrush, new RectangleF(W / 2 - 100, 324, 200, 26), center);
+                using (var pen = new Pen(accent, 4f))
+                {
+                    pen.CustomEndCap = new AdjustableArrowCap(5, 5);
+                    g.DrawLine(pen, pc.X - 8, pc.Y + 60, left.Right + 18, pc.Y + 60);
+                    g.DrawLine(pen, pc.Right + 8, pc.Y + 60, right.X - 18, pc.Y + 60);
+                }
+
+                g.FillRectangle(accentBrush, 0, H - 64, W, 4);
+                g.DrawString(About.Name + " - " + About.Company + " by " + About.Author, smallFont, grayBrush, new RectangleF(0, H - 52, W, 40), center);
+                bmp.Save(path, ImageFormat.Png);
+            }
+        }
+
+        static void DrawMonitor(Graphics g, Rectangle r)
+        {
+            using (var frame = new SolidBrush(Color.FromArgb(42, 45, 53)))
+            {
+                FillRound(g, frame, r, 14);
+                g.FillRectangle(frame, r.X + r.Width / 2 - 22, r.Bottom, 44, 18);
+                FillRound(g, frame, new Rectangle(r.X + r.Width / 2 - 80, r.Bottom + 16, 160, 12), 6);
+            }
+        }
+
+        static void FillRound(Graphics g, Brush brush, Rectangle r, int radius)
+        {
+            using (var path = new GraphicsPath())
+            {
+                int d = radius * 2;
+                path.AddArc(r.X, r.Y, d, d, 180, 90);
+                path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+                path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+                path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+                g.FillPath(brush, path);
+            }
+        }
+    }
+
     static class PowerTest
     {
         public static int Run(string outPath, uint offMode)
@@ -2298,6 +2637,7 @@ namespace Napda.MonitorCover
             if (cmd == "--selftest") return SelfTest.Run(args.Length > 1 ? args[1] : "selftest.txt");
             if (cmd == "--test-power")
                 return PowerTest.Run(args.Length > 1 ? args[1] : "power-test.txt", args.Length > 2 ? uint.Parse(args[2]) : MonitorPower.Off);
+            if (cmd == "--doc-images") return DocImages.Run(args.Length > 1 ? args[1] : "docs");
             if (cmd == "--probe-monitors")
             {
                 MonitorReport report = new MonitorWatcher().Check();

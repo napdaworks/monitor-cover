@@ -9,6 +9,18 @@
 - **[최신 버전 받기](https://github.com/napdaworks/monitor-cover/releases/latest)** (GitHub 릴리스)
 - 만든 곳 블로그: [호노누의 냅다AI](https://napdaworks.blogspot.com)
 
+## 한눈에 보기
+
+![본체 모니터는 까맣게, 원격 화면은 그대로](docs/images/concept.png)
+
+![시연: 가리기, 누가 모니터를 켜도 까만 화면, 단축키로 다시 보기](docs/images/demo.gif)
+
+| 평소 | 가리는 중 |
+|---|---|
+| ![화면이 보이는 상태의 창](docs/images/window-visible.png) | ![화면을 가린 상태의 창](docs/images/window-covered.png) |
+
+시연 영상은 실제 화면을 녹화한 게 아니라 흐름을 그림으로 만든 거예요. 모니터 가리기의 검은 화면은 화면 녹화·원격 화면에 안 찍히도록 만들었기 때문에, 실제로 녹화하면 평소 화면만 보여요.
+
 ## 왜 만들었나
 
 회사 PC를 원격으로 쓰는데, 자리를 비운 사이에 누가 모니터를 켜면 화면이 그대로 보였어요.
