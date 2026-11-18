@@ -40,7 +40,7 @@ namespace Napda.MonitorCover
         public const string Name = "모니터 가리기";
         public const string Company = "NAPDA";
         public const string Author = "Hononoo";
-        public const string ShortVersion = "1.5";
+        public const string ShortVersion = "1.6";
         public const string Version = ShortVersion + ".0.0";
         public const string Credit = Name + " - " + Company + " by " + Author;
         public const string Copyright = "Copyright (c) 2026 " + Author + " (" + Company + "). MIT License.";
@@ -193,6 +193,12 @@ namespace Napda.MonitorCover
         public static string SettingsFile
         {
             get { return Path.Combine(DataDir, "settings.ini"); }
+        }
+
+        // 가림 화면으로 고른 이미지는 원본을 옮기거나 지워도 되게 여기로 복사해 둔다
+        public static string CoverImageFile(string extension)
+        {
+            return Path.Combine(DataDir, "cover-image" + extension);
         }
 
         public static string ErrorLogFile
@@ -351,6 +357,23 @@ namespace Napda.MonitorCover
             if (Native.IsIconic(Handle)) Native.ShowWindow(Handle, Native.SW_SHOWNOACTIVATE);
             Native.SetWindowPos(Handle, Native.HWND_TOPMOST, target.X, target.Y, target.Width, target.Height,
                                 Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW | Native.SWP_NOOWNERZORDER);
+        }
+
+        // 이 화면 크기에 맞춰 미리 그려 둔 가림 이미지. 창이 닫힐 때 같이 정리한다.
+        public void SetCover(Bitmap cover)
+        {
+            BackgroundImageLayout = ImageLayout.None;
+            BackgroundImage = cover;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && BackgroundImage != null)
+            {
+                BackgroundImage.Dispose();
+                BackgroundImage = null;
+            }
+            base.Dispose(disposing);
         }
     }
 
@@ -653,6 +676,9 @@ namespace Napda.MonitorCover
         public string Hotkey = "Ctrl+Alt+B";
         public bool StartHidden;
         public string PasswordHash = "";
+        public string CoverMode = "color"; // color | image
+        public string CoverColor = "#000000";
+        public string CoverImage = "";
         public readonly string FilePath;
 
         public Settings(string filePath)
@@ -710,6 +736,9 @@ namespace Napda.MonitorCover
                 if (key == "hotkey") Hotkey = val;
                 else if (key == "starthidden") StartHidden = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
                 else if (key == "passwordhash") PasswordHash = val;
+                else if (key == "covermode") CoverMode = val == "image" ? "image" : "color";
+                else if (key == "covercolor") CoverColor = val;
+                else if (key == "coverimage") CoverImage = val;
             }
         }
 
@@ -729,6 +758,11 @@ namespace Napda.MonitorCover
             sb.AppendLine(";");
             sb.AppendLine("; passwordHash: 비밀번호를 그대로 적지 말고 해제 방식 설정에서 정하세요. 줄을 지우면 비밀번호 없음.");
             sb.AppendLine("passwordHash=" + PasswordHash);
+            sb.AppendLine(";");
+            sb.AppendLine("; coverMode: 가릴 때 보일 화면 (color = 단색, image = 이미지). 가림 화면 설정에서 바꾸는 걸 권해요.");
+            sb.AppendLine("coverMode=" + CoverMode);
+            sb.AppendLine("coverColor=" + CoverColor);
+            sb.AppendLine("coverImage=" + CoverImage);
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
@@ -1292,6 +1326,305 @@ namespace Napda.MonitorCover
         }
     }
 
+    // 가림 화면 모양: 단색이거나, 내가 고른 이미지를 화면 비율에 맞춰 꽉 채운 것
+    static class CoverLook
+    {
+        public static Color ParseColor(string text)
+        {
+            try
+            {
+                return ColorTranslator.FromHtml(text);
+            }
+            catch (Exception)
+            {
+                return Color.Black;
+            }
+        }
+
+        public static string ToHex(Color color)
+        {
+            return string.Format("#{0:X2}{1:X2}{2:X2}", color.R, color.G, color.B);
+        }
+
+        // 파일을 잠그지 않게 메모리로 읽어 온다. 못 읽으면 null.
+        public static Bitmap LoadImage(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+                using (var stream = new MemoryStream(File.ReadAllBytes(path)))
+                using (Image image = Image.FromStream(stream))
+                    return new Bitmap(image);
+            }
+            catch (Exception ex)
+            {
+                ErrorLog.Write(ex);
+                return null;
+            }
+        }
+
+        // 비율을 지키면서 화면을 꽉 채우고, 남는 부분은 가운데를 기준으로 잘라 낸다 (바탕화면의 "채우기")
+        public static Bitmap Render(Size size, Color background, Image image)
+        {
+            var bmp = new Bitmap(Math.Max(1, size.Width), Math.Max(1, size.Height), PixelFormat.Format32bppRgb);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(background);
+                if (image != null && image.Width > 0 && image.Height > 0)
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    RectangleF area = FillArea(size, image.Size);
+                    g.DrawImage(image, area);
+                }
+            }
+            return bmp;
+        }
+
+        public static RectangleF FillArea(Size target, Size source)
+        {
+            float scale = Math.Max(target.Width / (float)source.Width, target.Height / (float)source.Height);
+            float w = source.Width * scale, h = source.Height * scale;
+            return new RectangleF((target.Width - w) / 2f, (target.Height - h) / 2f, w, h);
+        }
+    }
+
+    // 만든 사람 명함. exe 안에 넣어 두어 프로그램에서 지우거나 숨길 수 없다.
+    static class CardImage
+    {
+        const string ResourceName = "namecard.png";
+
+        public static Image Load()
+        {
+            try
+            {
+                using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(ResourceName))
+                {
+                    if (stream == null) return null;
+                    using (Image image = Image.FromStream(stream))
+                        return new Bitmap(image);
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorLog.Write(ex);
+                return null;
+            }
+        }
+    }
+
+    // 명함을 크게 보여 주는 창
+    class CardViewer : Form
+    {
+        public CardViewer(Image card, Icon icon)
+        {
+            Text = "만든 사람 명함 - " + About.Credit;
+            Icon = icon;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            KeyPreview = true;
+            BackColor = Color.White;
+
+            Rectangle work = Screen.PrimaryScreen.WorkingArea;
+            float fit = Math.Min(1f, Math.Min(work.Width * 0.8f / card.Width, work.Height * 0.8f / card.Height));
+            ClientSize = new Size((int)(card.Width * fit), (int)(card.Height * fit));
+            var picture = new PictureBox();
+            picture.Image = card;
+            picture.SizeMode = PictureBoxSizeMode.Zoom;
+            picture.Dock = DockStyle.Fill;
+            picture.Cursor = Cursors.Hand;
+            picture.Click += delegate { Close(); };
+            Controls.Add(picture);
+            KeyDown += delegate(object sender, KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Escape) Close();
+            };
+        }
+    }
+
+    // 가림 화면 설정: 단색이나 내가 고른 이미지로 본체 모니터를 가린다
+    class CoverSettingsForm : Form
+    {
+        readonly RadioButton colorMode = new RadioButton();
+        readonly RadioButton imageMode = new RadioButton();
+        readonly Button colorButton = new Button();
+        readonly Button imageButton = new Button();
+        readonly Label imageName = new Label();
+        readonly PictureBox preview = new PictureBox();
+        readonly Label error = new Label();
+        Color color;
+        string imagePath;
+        Bitmap image;
+
+        public string Mode
+        {
+            get { return imageMode.Checked ? "image" : "color"; }
+        }
+
+        public Color CoverColor
+        {
+            get { return color; }
+        }
+
+        public string ImagePath
+        {
+            get { return imagePath; }
+        }
+
+        public CoverSettingsForm(string mode, Color currentColor, string currentImage)
+        {
+            color = currentColor;
+            imagePath = currentImage;
+            image = CoverLook.LoadImage(currentImage);
+            float scale = Ui.Scale;
+            int wide = (int)(380 * scale);
+            Text = "가림 화면 설정 - " + About.Credit;
+            Font = Ui.Font;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+
+            Label title = Ui.Label("본체 모니터를 가릴 때 보일 화면");
+            title.Font = new Font(Ui.Font, FontStyle.Bold);
+            colorMode.Text = "단색";
+            colorMode.AutoSize = true;
+            imageMode.Text = "이미지";
+            imageMode.AutoSize = true;
+            colorButton.Text = "색 고르기...";
+            colorButton.AutoSize = true;
+            imageButton.Text = "이미지 고르기...";
+            imageButton.AutoSize = true;
+            imageName.AutoSize = true;
+            imageName.ForeColor = SystemColors.GrayText;
+            imageName.MaximumSize = new Size(wide, 0);
+            error.AutoSize = true;
+            error.ForeColor = Color.Firebrick;
+            error.MaximumSize = new Size(wide, 0);
+            Rectangle primary = Screen.PrimaryScreen.Bounds;
+            preview.Size = new Size(wide, Math.Max(1, wide * primary.Height / Math.Max(1, primary.Width)));
+            preview.BorderStyle = BorderStyle.FixedSingle;
+            preview.Margin = new Padding(0, (int)(6 * scale), 0, (int)(4 * scale));
+
+            if (mode == "image" && image != null) imageMode.Checked = true;
+            else colorMode.Checked = true;
+            colorMode.CheckedChanged += delegate { UpdatePreview(); };
+            colorButton.Click += delegate { PickColor(); };
+            imageButton.Click += delegate { PickImage(); };
+
+            var colorRow = new FlowLayoutPanel();
+            colorRow.AutoSize = true;
+            colorRow.WrapContents = false;
+            colorRow.Controls.Add(colorMode);
+            colorRow.Controls.Add(colorButton);
+            var imageRow = new FlowLayoutPanel();
+            imageRow.AutoSize = true;
+            imageRow.WrapContents = false;
+            imageRow.Controls.Add(imageMode);
+            imageRow.Controls.Add(imageButton);
+
+            var buttons = new FlowLayoutPanel();
+            buttons.FlowDirection = FlowDirection.RightToLeft;
+            buttons.AutoSize = true;
+            buttons.Dock = DockStyle.Fill;
+            var cancel = new Button();
+            cancel.Text = "취소";
+            cancel.AutoSize = true;
+            cancel.DialogResult = DialogResult.Cancel;
+            var save = new Button();
+            save.Text = "저장";
+            save.AutoSize = true;
+            save.Click += delegate { OnSave(); };
+            buttons.Controls.Add(cancel);
+            buttons.Controls.Add(save);
+
+            TableLayoutPanel grid = Ui.Grid(scale);
+            Ui.AddWide(grid, title);
+            Ui.AddWide(grid, colorRow);
+            Ui.AddWide(grid, imageRow);
+            Ui.AddWide(grid, imageName);
+            Ui.AddWide(grid, preview);
+            Ui.AddWide(grid, Ui.Note("이미지는 화면 비율에 맞춰 꽉 채워요. 남는 부분은 가운데를 기준으로 잘라서 늘어나 보이지 않아요. 가림 화면은 본체 모니터에만 보이고 원격 화면에는 안 보여요.", wide));
+            Ui.AddWide(grid, error);
+            Ui.AddWide(grid, buttons);
+            Ui.AddWide(grid, Ui.Credit());
+            Controls.Add(grid);
+            AcceptButton = save;
+            CancelButton = cancel;
+            UpdatePreview();
+        }
+
+        void PickColor()
+        {
+            using (var dialog = new ColorDialog())
+            {
+                dialog.Color = color;
+                dialog.FullOpen = true;
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                color = dialog.Color;
+            }
+            colorMode.Checked = true;
+            UpdatePreview();
+        }
+
+        void PickImage()
+        {
+            using (var dialog = new OpenFileDialog())
+            {
+                dialog.Title = "가림 화면에 쓸 이미지 고르기";
+                dialog.Filter = "이미지 (*.png;*.jpg;*.jpeg;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.gif";
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                Bitmap loaded = CoverLook.LoadImage(dialog.FileName);
+                if (loaded == null)
+                {
+                    error.Text = "이 파일은 이미지로 열 수 없어요. 다른 파일을 골라 주세요.";
+                    return;
+                }
+                if (image != null) image.Dispose();
+                image = loaded;
+                imagePath = dialog.FileName;
+            }
+            error.Text = "";
+            imageMode.Checked = true;
+            UpdatePreview();
+        }
+
+        void UpdatePreview()
+        {
+            colorButton.BackColor = color;
+            colorButton.ForeColor = color.GetBrightness() < 0.5f ? Color.White : Color.Black;
+            colorButton.UseVisualStyleBackColor = false;
+            imageName.Text = image != null ? "고른 이미지: " + Path.GetFileName(imagePath) : "아직 고른 이미지가 없어요.";
+            Image old = preview.Image;
+            preview.Image = CoverLook.Render(preview.ClientSize, imageMode.Checked ? Color.Black : color, imageMode.Checked ? image : null);
+            if (old != null) old.Dispose();
+        }
+
+        void OnSave()
+        {
+            if (imageMode.Checked && image == null)
+            {
+                error.Text = "이미지를 먼저 골라 주세요.";
+                return;
+            }
+            DialogResult = DialogResult.OK;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (image != null) image.Dispose();
+                if (preview.Image != null) preview.Image.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+    }
+
     // 트레이 아이콘을 잘 모르는 사람도 쓸 수 있게 앞에 띄우는 창.
     // 큰 버튼 하나로 가리고 풀고, 닫아도 프로그램은 트레이에서 계속 돈다.
     class MainWindow : Form
@@ -1310,6 +1643,8 @@ namespace Napda.MonitorCover
         public event EventHandler QuitClicked;
         public event EventHandler AutoStartClicked;
         public event EventHandler HiddenToTray;
+        public event EventHandler CoverClicked;
+        public event EventHandler CardClicked;
 
         public string ToggleText
         {
@@ -1374,6 +1709,10 @@ namespace Napda.MonitorCover
             settings.Text = "해제 방식 설정";
             settings.AutoSize = true;
             settings.Click += delegate { Raise(SettingsClicked); };
+            var cover = new Button();
+            cover.Text = "가림 화면 설정";
+            cover.AutoSize = true;
+            cover.Click += delegate { Raise(CoverClicked); };
             var quit = new Button();
             quit.Text = About.Name + " 끝내기";
             quit.AutoSize = true;
@@ -1383,6 +1722,7 @@ namespace Napda.MonitorCover
             buttons.WrapContents = false;
             buttons.Margin = new Padding(0, (int)(6 * scale), 0, 0);
             buttons.Controls.Add(settings);
+            buttons.Controls.Add(cover);
             buttons.Controls.Add(quit);
 
             TableLayoutPanel grid = Ui.Grid(scale);
@@ -1393,6 +1733,25 @@ namespace Napda.MonitorCover
             Ui.AddWide(grid, autoStart);
             Ui.AddWide(grid, buttons);
             Ui.AddWide(grid, Ui.Credit());
+
+            // 만든 사람 명함 (exe 안에 들어 있어서 프로그램에서 지울 수 없다). 누르면 크게 보인다.
+            Image card = CardImage.Load();
+            if (card != null)
+            {
+                Label cardTitle = Ui.Note("만든 사람 명함 · 누르면 크게 볼 수 있어요", wide);
+                cardTitle.Margin = new Padding(0, (int)(10 * scale), 0, (int)(4 * scale));
+                var cardBox = new PictureBox();
+                cardBox.Image = card;
+                cardBox.SizeMode = PictureBoxSizeMode.Zoom;
+                cardBox.Size = new Size(wide, wide * card.Height / card.Width);
+                cardBox.BorderStyle = BorderStyle.FixedSingle;
+                cardBox.BackColor = Color.White;
+                cardBox.Cursor = Cursors.Hand;
+                cardBox.Margin = new Padding(0);
+                cardBox.Click += delegate { Raise(CardClicked); };
+                Ui.AddWide(grid, cardTitle);
+                Ui.AddWide(grid, cardBox);
+            }
             Controls.Add(grid);
         }
 
@@ -1550,6 +1909,8 @@ namespace Napda.MonitorCover
             window.SettingsClicked += delegate { OpenUnlockSettings(); };
             window.QuitClicked += delegate { RequestReveal(QuitNow); };
             window.AutoStartClicked += delegate { ToggleAutoStart(); };
+            window.CoverClicked += delegate { OpenCoverSettings(); };
+            window.CardClicked += delegate { ShowCard(); };
             window.HiddenToTray += delegate
             {
                 Balloon(About.Name + "는 여기서 계속 실행 중이에요", "이 아이콘을 누르면 창이 다시 열려요.", ToolTipIcon.Info);
@@ -1641,6 +2002,8 @@ namespace Napda.MonitorCover
             menu.Items.Add(autoStartItem);
             menu.Items.Add(new ToolStripMenuItem("바탕화면 버튼 만들기", null, delegate { MakeDesktopButton(true); }));
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("가림 화면 설정...", null, delegate { OpenCoverSettings(); }));
+            menu.Items.Add(new ToolStripMenuItem("만든 사람 명함 보기", null, delegate { ShowCard(); }));
             menu.Items.Add(new ToolStripMenuItem(About.Credit + " (v" + About.ShortVersion + ")", null, delegate { ShowAbout(); }));
             menu.Items.Add(new ToolStripMenuItem("종료", null, delegate { RequestReveal(QuitNow); }));
             menu.Opening += delegate
@@ -1784,25 +2147,101 @@ namespace Napda.MonitorCover
         // 검은 창을 띄우면 원격 화면까지 까매지니, 대신 모니터 전원을 DDC/CI로 끈다.
         string Cover()
         {
-            Uncover();
+            // 이미 가리는 중이면(가림 화면을 바꿀 때) 새 창을 먼저 띄운 뒤 옛 창을 치워서 화면이 한순간도 드러나지 않게 한다
+            var previous = new List<OverlayForm>(overlays);
+            overlays.Clear();
+            if (powerMode) Uncover();
             screenLayout = CurrentLayout();
             // 원격 데스크톱(RDP)으로 접속한 동안은 윈도우가 본체 모니터를 잠금 화면으로 바꿔 두니 띄울 필요가 없다
-            if (SystemInformation.TerminalServerSession) return null;
-            foreach (Screen screen in Screen.AllScreens)
+            if (SystemInformation.TerminalServerSession)
             {
-                var form = new OverlayForm(screen.Bounds, Color.Black, true);
-                IntPtr handle = form.Handle;
-                if (!form.ExcludedFromCapture)
-                {
-                    form.Dispose();
-                    Uncover();
-                    return CoverByPower();
-                }
-                overlays.Add(form);
-                form.Show();
-                form.PinTop();
+                DisposeAll(previous);
+                return null;
             }
+            Color fill = CoverLook.ParseColor(settings.CoverColor);
+            Bitmap picture = settings.CoverMode == "image" ? CoverLook.LoadImage(settings.CoverImage) : null;
+            try
+            {
+                foreach (Screen screen in Screen.AllScreens)
+                {
+                    var form = new OverlayForm(screen.Bounds, picture != null ? Color.Black : fill, true);
+                    IntPtr handle = form.Handle;
+                    if (!form.ExcludedFromCapture)
+                    {
+                        form.Dispose();
+                        DisposeAll(previous);
+                        Uncover();
+                        return CoverByPower();
+                    }
+                    if (picture != null) form.SetCover(CoverLook.Render(screen.Bounds.Size, Color.Black, picture));
+                    overlays.Add(form);
+                    form.Show();
+                    form.PinTop();
+                }
+            }
+            finally
+            {
+                if (picture != null) picture.Dispose();
+            }
+            DisposeAll(previous);
             return null;
+        }
+
+        static void DisposeAll(List<OverlayForm> forms)
+        {
+            foreach (OverlayForm form in forms)
+            {
+                if (!form.IsDisposed) form.Dispose();
+            }
+        }
+
+        void OpenCoverSettings()
+        {
+            settings.Load();
+            using (var form = new CoverSettingsForm(settings.CoverMode, CoverLook.ParseColor(settings.CoverColor), settings.CoverImage))
+            {
+                if ((window.Visible ? form.ShowDialog(window) : form.ShowDialog()) != DialogResult.OK) return;
+                settings.CoverColor = CoverLook.ToHex(form.CoverColor);
+                if (form.Mode == "image" && !string.Equals(form.ImagePath, settings.CoverImage, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        // 원본을 옮기거나 지워도 계속 쓸 수 있게 설정 폴더로 복사해 둔다
+                        Directory.CreateDirectory(AppPaths.DataDir);
+                        foreach (string old in Directory.GetFiles(AppPaths.DataDir, "cover-image.*")) File.Delete(old);
+                        string target = AppPaths.CoverImageFile(Path.GetExtension(form.ImagePath).ToLowerInvariant());
+                        File.Copy(form.ImagePath, target, true);
+                        settings.CoverImage = target;
+                    }
+                    catch (Exception ex)
+                    {
+                        ErrorLog.Write(ex);
+                        Balloon("이미지를 저장하지 못했어요", ex.Message, ToolTipIcon.Warning);
+                        return;
+                    }
+                }
+                settings.CoverMode = form.Mode;
+                string saveError = settings.TrySave();
+                if (saveError != null) Balloon("설정을 저장하지 못했어요", saveError, ToolTipIcon.Warning);
+                if (hidden && !powerMode)
+                {
+                    string error = Cover();
+                    if (error != null) SetHidden(false);
+                }
+                Balloon("가림 화면을 바꿨어요", form.Mode == "image" ? "고른 이미지로 가려요." : "고른 색으로 가려요.", ToolTipIcon.Info);
+            }
+        }
+
+        void ShowCard()
+        {
+            Image card = CardImage.Load();
+            if (card == null) return;
+            using (var viewer = new CardViewer(card, Art.LoadAppIcon()))
+            {
+                if (window.Visible) viewer.ShowDialog(window);
+                else viewer.ShowDialog();
+            }
+            card.Dispose();
         }
 
         string CoverByPower()
@@ -2071,6 +2510,14 @@ namespace Napda.MonitorCover
             captured = HotkeyBox.Describe(Keys.Control | Keys.Alt, Keys.F9);
             check(captured == "Ctrl+Alt+F9" && HotkeyParser.TryParse(captured, out mods, out vk) && vk == (uint)Keys.F9, "captured function key parses back (" + captured + ")");
 
+            using (Image card = CardImage.Load())
+                check(card != null && card.Width > 0, "business card is built into the exe");
+            RectangleF wideOnTall = CoverLook.FillArea(new Size(100, 100), new Size(200, 100));
+            check(wideOnTall.Height == 100 && wideOnTall.Width == 200 && wideOnTall.X == -50, "cover image fills the screen and crops the sides evenly");
+            RectangleF tallOnWide = CoverLook.FillArea(new Size(1920, 1080), new Size(1080, 1920));
+            check(tallOnWide.Width == 1920 && Math.Abs(tallOnWide.Y + (tallOnWide.Height - 1080) / 2f) < 0.01f, "portrait image on a wide screen keeps its ratio");
+            check(CoverLook.ToHex(CoverLook.ParseColor("#1A2B3C")) == "#1A2B3C" && CoverLook.ParseColor("nonsense").ToArgb() == Color.Black.ToArgb(), "cover color reads and writes");
+
             string hash = PasswordHash.Create("hononoo-1234");
             check(PasswordHash.Verify("hononoo-1234", hash), "password verifies");
             check(!PasswordHash.Verify("hononoo-1235", hash), "wrong password rejected");
@@ -2262,6 +2709,8 @@ namespace Napda.MonitorCover
                 Capture(form, Path.Combine(dir, "unlock-settings.png"));
             using (var form = new CloseChoiceForm())
                 Capture(form, Path.Combine(dir, "close-choice.png"));
+            using (var form = new CoverSettingsForm("color", Color.FromArgb(13, 15, 20), ""))
+                Capture(form, Path.Combine(dir, "cover-settings.png"));
             using (var form = new PasswordPrompt(delegate(string text) { return false; }))
                 Capture(form, Path.Combine(dir, "password-prompt.png"));
             DrawConcept(Path.Combine(dir, "concept.png"));
