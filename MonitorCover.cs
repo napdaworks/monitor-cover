@@ -40,17 +40,21 @@ namespace Napda.MonitorCover
         public const string Name = "모니터 가리기";
         public const string Company = "NAPDA";
         public const string Author = "Hononoo";
-        public const string ShortVersion = "1.6";
+        public const string ShortVersion = "1.7";
         public const string Version = ShortVersion + ".0.0";
         public const string Credit = Name + " - " + Company + " by " + Author;
         public const string Copyright = "Copyright (c) 2026 " + Author + " (" + Company + "). MIT License.";
-        // 블로그·포트폴리오 주소가 생기면 여기에 넣는다. 정보 창에서 바로 열 수 있다.
-        public const string Link = "";
+        // NAPDA 프로그램 블로그. 정보 창에서 바로 열 수 있다.
+        public const string Link = "https://napdaworks.blogspot.com";
+        // 만든 사람(호노누) 블로그. 명함 아래·명함 창·트레이 메뉴에서 바로 연다.
+        public const string AuthorBlog = "https://blog.naver.com/hononoo";
+        public const string AuthorBlogLabel = "blog.naver.com/hononoo";
 
         public const string Text =
             Name + " v" + ShortVersion + "\n" +
             "만든 곳: " + Company + " (냅다)\n" +
-            "만든 사람: " + Author + "\n\n" +
+            "만든 사람: " + Author + "\n" +
+            "호노누 블로그: " + AuthorBlogLabel + "\n\n" +
             "본체 모니터만 검게 가리고, 원격 화면에는 원래 화면이 그대로 보이게 해요.\n\n" +
             Copyright + "\n" +
             "수정하거나 다시 배포할 때도 만든 사람 표기를 지우면 안 돼요.";
@@ -1414,6 +1418,35 @@ namespace Napda.MonitorCover
     }
 
     // 명함을 크게 보여 주는 창
+    static class Links
+    {
+        public static void Open(string url)
+        {
+            try
+            {
+                Process.Start(url);
+            }
+            catch (Exception ex)
+            {
+                ErrorLog.Write(ex);
+            }
+        }
+
+        // "호노누 블로그 바로가기" 링크 (명함 아래·명함 창에 같이 쓴다)
+        public static LinkLabel AuthorBlog(Font font)
+        {
+            var link = new LinkLabel();
+            link.Text = "호노누 블로그 바로가기 →  " + About.AuthorBlogLabel;
+            link.Font = new Font(font, FontStyle.Bold);
+            link.AutoSize = true;
+            link.LinkColor = Color.FromArgb(255, 90, 54);
+            link.ActiveLinkColor = Color.FromArgb(200, 60, 30);
+            link.LinkBehavior = LinkBehavior.HoverUnderline;
+            link.LinkClicked += delegate { Open(About.AuthorBlog); };
+            return link;
+        }
+    }
+
     class CardViewer : Form
     {
         public CardViewer(Image card, Icon icon)
@@ -1429,7 +1462,15 @@ namespace Napda.MonitorCover
 
             Rectangle work = Screen.PrimaryScreen.WorkingArea;
             float fit = Math.Min(1f, Math.Min(work.Width * 0.8f / card.Width, work.Height * 0.8f / card.Height));
-            ClientSize = new Size((int)(card.Width * fit), (int)(card.Height * fit));
+            Font = Ui.Font;
+            LinkLabel blog = Links.AuthorBlog(Ui.Font);
+            var bottom = new Panel();
+            bottom.Dock = DockStyle.Bottom;
+            bottom.Height = blog.PreferredHeight + (int)(20 * Ui.Scale);
+            bottom.BackColor = Color.FromArgb(244, 245, 247);
+            blog.Location = new Point((int)(14 * Ui.Scale), (bottom.Height - blog.PreferredHeight) / 2);
+            bottom.Controls.Add(blog);
+            ClientSize = new Size((int)(card.Width * fit), (int)(card.Height * fit) + bottom.Height);
             var picture = new PictureBox();
             picture.Image = card;
             picture.SizeMode = PictureBoxSizeMode.Zoom;
@@ -1437,6 +1478,7 @@ namespace Napda.MonitorCover
             picture.Cursor = Cursors.Hand;
             picture.Click += delegate { Close(); };
             Controls.Add(picture);
+            Controls.Add(bottom);
             KeyDown += delegate(object sender, KeyEventArgs e)
             {
                 if (e.KeyCode == Keys.Escape) Close();
@@ -1752,6 +1794,9 @@ namespace Napda.MonitorCover
                 Ui.AddWide(grid, cardTitle);
                 Ui.AddWide(grid, cardBox);
             }
+            LinkLabel blog = Links.AuthorBlog(Ui.Font);
+            blog.Margin = new Padding(0, (int)(8 * scale), 0, 0);
+            Ui.AddWide(grid, blog);
             Controls.Add(grid);
         }
 
@@ -2004,6 +2049,7 @@ namespace Napda.MonitorCover
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("가림 화면 설정...", null, delegate { OpenCoverSettings(); }));
             menu.Items.Add(new ToolStripMenuItem("만든 사람 명함 보기", null, delegate { ShowCard(); }));
+            menu.Items.Add(new ToolStripMenuItem("호노누 블로그 바로가기", null, delegate { Links.Open(About.AuthorBlog); }));
             menu.Items.Add(new ToolStripMenuItem(About.Credit + " (v" + About.ShortVersion + ")", null, delegate { ShowAbout(); }));
             menu.Items.Add(new ToolStripMenuItem("종료", null, delegate { RequestReveal(QuitNow); }));
             menu.Opening += delegate
@@ -2512,6 +2558,7 @@ namespace Napda.MonitorCover
 
             using (Image card = CardImage.Load())
                 check(card != null && card.Width > 0, "business card is built into the exe");
+            check(About.AuthorBlog == "https://blog.naver.com/hononoo" && About.Text.Contains(About.AuthorBlogLabel), "maker's blog link is in the program");
             RectangleF wideOnTall = CoverLook.FillArea(new Size(100, 100), new Size(200, 100));
             check(wideOnTall.Height == 100 && wideOnTall.Width == 200 && wideOnTall.X == -50, "cover image fills the screen and crops the sides evenly");
             RectangleF tallOnWide = CoverLook.FillArea(new Size(1920, 1080), new Size(1080, 1920));
