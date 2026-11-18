@@ -5,3 +5,6 @@ app.ico
 # NAPDA 내부 문서와 블로그 테마는 이 저장소에 넣지 않아요
 NAPDA.md
 blog/
+
+# 배포용으로 만든 압축 파일
+dist/
